@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env
+**/.env.local
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Expo
+.expo/
+apps/mobile/.expo/
+apps/mobile/dist/
+
+# iOS
+*.ipa
+*.dSYM.zip
+*.dSYM
+apps/mobile/ios/Pods/
+
+# Android
+*.apk
+*.aab
+apps/mobile/android/.gradle/
+apps/mobile/android/app/build/
+
+# Firebase
+google-services.json
+GoogleService-Info.plist
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+
+# Misc
+.turbo/
