@@ -86,7 +86,6 @@ jobs:
 
       - name: Deploy to Vercel
         run: |
-          cd apps/web
           vercel --token ${{ secrets.VERCEL_TOKEN }} --prod --yes
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
