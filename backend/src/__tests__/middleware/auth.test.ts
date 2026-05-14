@@ -54,7 +54,7 @@ describe('authenticate middleware', () => {
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       single: jest.fn().mockResolvedValue({
-        data: { id: 'user-1', email: 'test@test.com', role: 'customer', is_active: false },
+        data: { id: 'user-1', email: 'test@test.com', user_type: 'customer', deleted_at: '2024-01-01T00:00:00Z' },
         error: null,
       }),
     });
@@ -76,7 +76,7 @@ describe('authenticate middleware', () => {
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       single: jest.fn().mockResolvedValue({
-        data: { id: 'user-1', email: 'test@test.com', role: 'provider', is_active: true },
+        data: { id: 'user-1', email: 'test@test.com', user_type: 'provider', deleted_at: null },
         error: null,
       }),
     });
@@ -86,6 +86,6 @@ describe('authenticate middleware', () => {
       .set('Authorization', 'Bearer valid-token');
     expect(res.status).toBe(200);
     expect(res.body.user.id).toBe('user-1');
-    expect(res.body.user.role).toBe('provider');
+    expect(res.body.user.user_type).toBe('provider');
   });
 });

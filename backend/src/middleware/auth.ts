@@ -7,7 +7,7 @@ export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
     email: string;
-    role: string;
+    user_type: string;
   };
 }
 
@@ -29,21 +29,21 @@ export async function authenticate(
     throw new AppError('Invalid or expired token', 401);
   }
 
-  // Attach user profile (including role) from our users table
+  // Attach user profile from our users table
   const { data: profile } = await supabaseAdmin
     .from('users')
-    .select('id, email, role, is_active')
+    .select('id, email, user_type, deleted_at')
     .eq('id', user.id)
     .single();
 
-  if (!profile?.is_active) {
+  if (profile?.deleted_at) {
     throw new AppError('Account is inactive', 403);
   }
 
   req.user = {
     id: user.id,
     email: user.email!,
-    role: profile?.role || 'customer',
+    user_type: profile?.user_type || 'customer',
   };
 
   next();
@@ -70,7 +70,7 @@ export async function optionalAuth(
 // Role guard
 export function requireRole(...roles: string[]) {
   return (req: AuthenticatedRequest, _res: Response, next: NextFunction): void => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!req.user || !roles.includes(req.user.user_type)) {
       throw new AppError('Insufficient permissions', 403);
     }
     next();

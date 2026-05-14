@@ -1,70 +1,48 @@
 // ============================================================
-// LOKASK — Shared Types Package
+// LOKASK — Shared Types Package (Phase 2 MVP)
 // packages/types/src/index.ts
 // ============================================================
 
-// ─── Enums ───────────────────────────────────────────────────
-
-export type UserRole = 'customer' | 'provider' | 'both' | 'admin';
+export type UserType = 'customer' | 'provider' | 'both';
 export type BookingStatus = 'pending' | 'confirmed' | 'in_progress' | 'completed' | 'cancelled';
-export type PaymentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'refunded';
-export type MessageType = 'text' | 'image' | 'location' | 'system';
-export type NotificationType = 'booking' | 'message' | 'payment' | 'review' | 'system';
+export type BookingPaymentStatus = 'unpaid' | 'held' | 'released' | 'refunded';
+export type PaymentStatus = 'pending' | 'captured' | 'held' | 'released' | 'refunded' | 'failed';
 export type ServiceCategory =
   | 'cleaning'
   | 'tutoring'
-  | 'delivery'
-  | 'handyman'
   | 'beauty'
-  | 'tech_support'
+  | 'fitness'
+  | 'delivery'
+  | 'cooking'
+  | 'photography'
+  | 'handyman'
   | 'childcare'
   | 'pet_care'
-  | 'cooking'
   | 'translation'
-  | 'fitness'
-  | 'photography'
-  | 'other';
-
-// ─── Core Models ─────────────────────────────────────────────
+  | 'tech';
+export type PriceType = 'hourly' | 'fixed';
 
 export interface User {
   id: string;
+  name: string;
   email: string;
   phone?: string;
-  full_name: string;
-  avatar_url?: string;
-  role: UserRole;
-  is_verified: boolean;
-  is_active: boolean;
-  language: string;
-  stripe_customer_id?: string;
-  stripe_account_id?: string; // Stripe Connect for providers
-  location?: GeoPoint;
-  address?: string;
-  city?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ProviderProfile {
-  id: string;
-  user_id: string;
+  user_type: UserType;
+  profile_image?: string;
   bio?: string;
-  tagline?: string;
-  skills: string[];
-  languages: string[];
+  location_lat?: number;
+  location_lng?: number;
+  location_label?: string;
   nationality?: string;
-  id_verified: boolean;
-  background_checked: boolean;
-  rating_avg: number;
-  review_count: number;
-  completed_jobs: number;
-  response_time_minutes?: number;
-  portfolio_urls: string[];
-  is_available: boolean;
-  availability_schedule?: AvailabilitySchedule;
+  language: string;
+  rating: number;
+  total_bookings: number;
+  is_premium: boolean;
+  stripe_customer_id?: string;
+  stripe_account_id?: string;
+  fcm_token?: string;
+  deleted_at?: string;
   created_at: string;
-  updated_at: string;
 }
 
 export interface Service {
@@ -74,20 +52,20 @@ export interface Service {
   title: string;
   description: string;
   category: ServiceCategory;
+  price_type: PriceType;
   price: number;
-  price_unit: 'hourly' | 'fixed' | 'daily';
-  currency: string;
-  duration_minutes?: number;
   images: string[];
-  tags: string[];
-  location?: GeoPoint;
-  service_area_km?: number;
-  is_remote: boolean;
+  availability?: ServiceAvailability;
   is_active: boolean;
-  rating_avg: number;
+  is_featured: boolean;
+  rating: number;
   review_count: number;
   created_at: string;
-  updated_at: string;
+}
+
+export interface ServiceAvailability {
+  days: ('mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun')[];
+  slots: string[]; // "09:00"
 }
 
 export interface Booking {
@@ -98,44 +76,26 @@ export interface Booking {
   customer?: User;
   provider_id: string;
   provider?: User;
+  scheduled_date: string; // "YYYY-MM-DD"
+  scheduled_time: string; // "HH:MM"
+  duration_hours?: number;
   status: BookingStatus;
-  scheduled_at: string;
-  duration_minutes: number;
-  address?: string;
-  location?: GeoPoint;
-  notes?: string;
+  payment_status: BookingPaymentStatus;
   total_amount: number;
-  currency: string;
-  payment_id?: string;
-  payment_status: PaymentStatus;
-  cancelled_at?: string;
-  cancelled_by?: string;
-  cancellation_reason?: string;
-  completed_at?: string;
+  notes?: string;
   created_at: string;
-  updated_at: string;
 }
 
 export interface Message {
   id: string;
-  conversation_id: string;
-  sender_id: string;
-  sender?: User;
-  type: MessageType;
-  content: string;
-  image_url?: string;
-  location?: GeoPoint;
-  is_read: boolean;
-  read_at?: string;
-  created_at: string;
-}
-
-export interface Conversation {
-  id: string;
-  participants: string[];
-  last_message?: Message;
-  last_message_at?: string;
   booking_id?: string;
+  sender_id: string;
+  sender?: Pick<User, 'id' | 'name' | 'profile_image'>;
+  receiver_id: string;
+  content?: string;
+  image_url?: string;
+  location?: { lat: number; lng: number };
+  is_read: boolean;
   created_at: string;
 }
 
@@ -143,35 +103,31 @@ export interface Review {
   id: string;
   booking_id: string;
   reviewer_id: string;
-  reviewer?: User;
+  reviewer?: Pick<User, 'id' | 'name' | 'profile_image'>;
   reviewee_id: string;
-  service_id: string;
-  rating: number; // 1–5
+  rating: number;
   comment?: string;
-  tags: string[];
+  provider_reply?: string;
   created_at: string;
 }
 
 export interface Payment {
   id: string;
   booking_id: string;
-  customer_id: string;
-  provider_id: string;
   stripe_payment_intent_id: string;
   amount: number;
-  currency: string;
+  platform_fee: number;
+  customer_fee: number;
+  provider_earnings: number;
   status: PaymentStatus;
-  stripe_transfer_id?: string;
-  provider_amount: number; // amount - stripe fee (no platform cut)
-  metadata?: Record<string, string>;
+  released_at?: string;
   created_at: string;
-  updated_at: string;
 }
 
 export interface Notification {
   id: string;
   user_id: string;
-  type: NotificationType;
+  type: 'booking' | 'message' | 'payment' | 'review' | 'system';
   title: string;
   body: string;
   data?: Record<string, string>;
@@ -179,27 +135,10 @@ export interface Notification {
   created_at: string;
 }
 
-// ─── Utility Types ───────────────────────────────────────────
-
-export interface GeoPoint {
-  lat: number;
-  lng: number;
-}
-
-export interface AvailabilitySchedule {
-  monday?: DaySchedule;
-  tuesday?: DaySchedule;
-  wednesday?: DaySchedule;
-  thursday?: DaySchedule;
-  friday?: DaySchedule;
-  saturday?: DaySchedule;
-  sunday?: DaySchedule;
-}
-
-export interface DaySchedule {
-  enabled: boolean;
-  start: string; // "09:00"
-  end: string;   // "18:00"
+export interface ApiResponse<T = void> {
+  success: boolean;
+  data?: T;
+  error?: string;
 }
 
 export interface PaginatedResponse<T> {
@@ -210,57 +149,12 @@ export interface PaginatedResponse<T> {
   has_more: boolean;
 }
 
-export interface ApiResponse<T = void> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  message?: string;
-}
-
-// ─── Request/Filter Types ─────────────────────────────────────
-
-export interface ServiceFilter {
-  category?: ServiceCategory;
-  min_price?: number;
-  max_price?: number;
-  rating_min?: number;
-  is_remote?: boolean;
-  lat?: number;
-  lng?: number;
-  radius_km?: number;
-  query?: string;
-  page?: number;
-  limit?: number;
-}
-
-export interface CreateServiceInput {
-  title: string;
-  description: string;
-  category: ServiceCategory;
-  price: number;
-  price_unit: 'hourly' | 'fixed' | 'daily';
-  duration_minutes?: number;
-  images?: string[];
-  tags?: string[];
-  lat?: number;
-  lng?: number;
-  service_area_km?: number;
-  is_remote?: boolean;
-}
-
-export interface CreateBookingInput {
-  service_id: string;
-  scheduled_at: string;
-  duration_minutes?: number;
-  address?: string;
-  lat?: number;
-  lng?: number;
-  notes?: string;
-}
-
-export interface CreateReviewInput {
-  booking_id: string;
-  rating: number;
-  comment?: string;
-  tags?: string[];
-}
+// Commission constants
+export const PLATFORM_COMMISSION_RATE = 0.15;       // 15% default
+export const PREMIUM_COMMISSION_RATE = 0.10;        // 10% for premium providers
+export const CUSTOMER_BOOKING_FEE_RATE = 0.02;      // 2%
+export const CUSTOMER_BOOKING_FEE_MIN = 0.50;
+export const CUSTOMER_BOOKING_FEE_MAX = 5.00;
+export const CUSTOMER_FEE_WAIVED_BOOKINGS = 3;      // waived for first 3 bookings
+export const FEATURED_BOOST_PRICE = 4.90;
+export const PREMIUM_SUBSCRIPTION_PRICE = 9.90;

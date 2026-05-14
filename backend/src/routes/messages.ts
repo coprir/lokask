@@ -9,236 +9,180 @@ import { sendNotification } from '../services/notifications';
 const router = Router();
 
 const SendMessageSchema = z.object({
-  conversation_id: z.string().uuid(),
-  type: z.enum(['text', 'image', 'location']).default('text'),
-  content: z.string().max(5000),
+  receiver_id: z.string().uuid(),
+  content: z.string().max(5000).optional(),
   image_url: z.string().url().optional(),
-  location_data: z.object({
+  location: z.object({
     lat: z.number(),
     lng: z.number(),
-    address: z.string().optional(),
   }).optional(),
-});
-
-const CreateConversationSchema = z.object({
-  recipient_id: z.string().uuid(),
   booking_id: z.string().uuid().optional(),
-  initial_message: z.string().max(1000).optional(),
-});
+}).refine(
+  (d) => d.content !== undefined || d.image_url !== undefined || d.location !== undefined,
+  { message: 'At least one of content, image_url, or location must be provided' }
+);
 
-// ─── GET /messages/conversations ─────────────────────────────
-
-router.get('/conversations', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-  const userId = req.user!.id;
-
-  const { data, error } = await supabaseAdmin
-    .from('conversations')
-    .select(`
-      *,
-      last_message:messages(
-        id, content, type, created_at, sender_id
-      )
-    `)
-    .contains('participants', [userId])
-    .order('last_message_at', { ascending: false })
-    .limit(50);
-
-  if (error) throw new AppError('Failed to fetch conversations', 500);
-
-  // Enrich with other participant info
-  const enriched = await Promise.all(
-    (data || []).map(async (conv) => {
-      const otherId = conv.participants.find((p: string) => p !== userId);
-      if (!otherId) return conv;
-
-      const { data: other } = await supabaseAdmin
-        .from('users')
-        .select('id, full_name, avatar_url')
-        .eq('id', otherId)
-        .single();
-
-      // Unread count
-      const { count } = await supabaseAdmin
-        .from('messages')
-        .select('*', { count: 'exact', head: true })
-        .eq('conversation_id', conv.id)
-        .eq('is_read', false)
-        .neq('sender_id', userId);
-
-      return { ...conv, other_user: other, unread_count: count ?? 0 };
-    })
-  );
-
-  res.json({ success: true, data: enriched });
-});
-
-// ─── POST /messages/conversations — start conversation ────────
-
-router.post('/conversations', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-  const { recipient_id, booking_id, initial_message } = CreateConversationSchema.parse(req.body);
-  const userId = req.user!.id;
-
-  // Check if conversation already exists
-  const { data: existing } = await supabaseAdmin
-    .from('conversations')
-    .select('id')
-    .contains('participants', [userId, recipient_id])
-    .maybeSingle();
-
-  let conversationId: string;
-
-  if (existing) {
-    conversationId = existing.id;
-  } else {
-    const { data: conv, error } = await supabaseAdmin
-      .from('conversations')
-      .insert({
-        participants: [userId, recipient_id],
-        booking_id: booking_id || null,
-        last_message_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
-
-    if (error) throw new AppError('Failed to create conversation', 500);
-    conversationId = conv.id;
-  }
-
-  // Send initial message if provided
-  if (initial_message) {
-    await supabaseAdmin.from('messages').insert({
-      conversation_id: conversationId,
-      sender_id: userId,
-      type: 'text',
-      content: initial_message,
-    });
-  }
-
-  res.status(201).json({ success: true, data: { conversation_id: conversationId } });
-});
-
-// ─── GET /messages/:conversationId ───────────────────────────
-
-router.get('/:conversationId', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-  const { conversationId } = req.params;
-  const userId = req.user!.id;
-  const { before, limit = 50 } = req.query;
-
-  // Verify participant
-  const { data: conv } = await supabaseAdmin
-    .from('conversations')
-    .select('participants')
-    .eq('id', conversationId)
-    .single();
-
-  if (!conv || !conv.participants.includes(userId)) {
-    throw new AppError('Conversation not found', 404);
-  }
-
-  let query = supabaseAdmin
-    .from('messages')
-    .select(`
-      *,
-      sender:users!messages_sender_id_fkey(id, full_name, avatar_url)
-    `)
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: false })
-    .limit(Number(limit));
-
-  if (before) {
-    query = query.lt('created_at', before as string);
-  }
-
-  const { data, error } = await query;
-  if (error) throw new AppError('Failed to fetch messages', 500);
-
-  // Mark messages as read
-  await supabaseAdmin
-    .from('messages')
-    .update({ is_read: true, read_at: new Date().toISOString() })
-    .eq('conversation_id', conversationId)
-    .eq('is_read', false)
-    .neq('sender_id', userId);
-
-  res.json({ success: true, data: (data || []).reverse() });
-});
-
-// ─── POST /messages — send message ───────────────────────────
+// ─── POST /messages — send a direct message ───────────────────
 
 router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const body = SendMessageSchema.parse(req.body);
-  const userId = req.user!.id;
-
-  // Verify participant
-  const { data: conv } = await supabaseAdmin
-    .from('conversations')
-    .select('participants')
-    .eq('id', body.conversation_id)
-    .single();
-
-  if (!conv || !conv.participants.includes(userId)) {
-    throw new AppError('Conversation not found', 404);
-  }
+  const senderId = req.user!.id;
 
   const { data: message, error } = await supabaseAdmin
     .from('messages')
     .insert({
-      conversation_id: body.conversation_id,
-      sender_id: userId,
-      type: body.type,
-      content: body.content,
-      image_url: body.image_url,
-      location_data: body.location_data,
+      sender_id: senderId,
+      receiver_id: body.receiver_id,
+      content: body.content ?? null,
+      image_url: body.image_url ?? null,
+      location: body.location ?? null,
+      booking_id: body.booking_id ?? null,
     })
     .select(`
       *,
-      sender:users!messages_sender_id_fkey(id, full_name, avatar_url)
+      sender:users!messages_sender_id_fkey(id, name, profile_image)
     `)
     .single();
 
   if (error) throw new AppError('Failed to send message', 500);
 
-  // Update conversation timestamp
-  await supabaseAdmin
-    .from('conversations')
-    .update({ last_message_at: new Date().toISOString() })
-    .eq('id', body.conversation_id);
+  // Push notification to receiver
+  const { data: receiver } = await supabaseAdmin
+    .from('users')
+    .select('fcm_token')
+    .eq('id', body.receiver_id)
+    .single();
 
-  // Push notification to recipient
-  const recipientId = conv.participants.find((p: string) => p !== userId);
-  if (recipientId) {
+  if (receiver?.fcm_token) {
     const { data: sender } = await supabaseAdmin
       .from('users')
-      .select('full_name')
-      .eq('id', userId)
+      .select('name')
+      .eq('id', senderId)
       .single();
 
-    const { data: recipient } = await supabaseAdmin
-      .from('users')
-      .select('fcm_token')
-      .eq('id', recipientId)
-      .single();
+    const preview = body.content
+      ? body.content.slice(0, 80)
+      : body.image_url
+      ? 'Image'
+      : 'Location';
 
-    if (recipient?.fcm_token) {
-      const preview = body.type === 'text'
-        ? body.content.slice(0, 80)
-        : body.type === 'image'
-        ? '📷 Image'
-        : '📍 Location';
+    await sendNotification({
+      token: receiver.fcm_token,
+      title: sender?.name || 'New message',
+      body: preview,
+      data: { type: 'message', sender_id: senderId },
+    });
+  }
 
-      await sendNotification({
-        token: recipient.fcm_token,
-        title: sender?.full_name || 'New message',
-        body: preview,
-        data: {
-          type: 'message',
-          conversation_id: body.conversation_id,
-        },
+  res.status(201).json({ success: true, data: message });
+});
+
+// ─── GET /messages/conversations — inbox list ─────────────────
+
+router.get('/conversations', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+
+  // Get distinct users this user has exchanged messages with
+  const { data: sent } = await supabaseAdmin
+    .from('messages')
+    .select('receiver_id, created_at, content, image_url')
+    .eq('sender_id', userId)
+    .order('created_at', { ascending: false });
+
+  const { data: received } = await supabaseAdmin
+    .from('messages')
+    .select('sender_id, created_at, content, image_url')
+    .eq('receiver_id', userId)
+    .order('created_at', { ascending: false });
+
+  // Collect unique partner IDs
+  const partnerMap = new Map<string, { partner_id: string; last_message_at: string; preview: string }>();
+
+  for (const m of (sent || [])) {
+    const existing = partnerMap.get(m.receiver_id);
+    if (!existing || m.created_at > existing.last_message_at) {
+      partnerMap.set(m.receiver_id, {
+        partner_id: m.receiver_id,
+        last_message_at: m.created_at,
+        preview: m.content || (m.image_url ? 'Image' : 'Location'),
       });
     }
   }
 
-  res.status(201).json({ success: true, data: message });
+  for (const m of (received || [])) {
+    const existing = partnerMap.get(m.sender_id);
+    if (!existing || m.created_at > existing.last_message_at) {
+      partnerMap.set(m.sender_id, {
+        partner_id: m.sender_id,
+        last_message_at: m.created_at,
+        preview: m.content || (m.image_url ? 'Image' : 'Location'),
+      });
+    }
+  }
+
+  const partnerIds = Array.from(partnerMap.keys());
+  if (partnerIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const { data: partners } = await supabaseAdmin
+    .from('users')
+    .select('id, name, profile_image')
+    .in('id', partnerIds);
+
+  const conversations = (partners || []).map((p) => {
+    const thread = partnerMap.get(p.id)!;
+    return {
+      partner: p,
+      last_message_at: thread.last_message_at,
+      preview: thread.preview,
+    };
+  }).sort((a, b) => b.last_message_at.localeCompare(a.last_message_at));
+
+  res.json({ success: true, data: conversations });
+});
+
+// ─── GET /messages/:userId — thread with a specific user ──────
+
+router.get('/:userId', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { userId: otherId } = req.params;
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 50);
+  const offset = (page - 1) * limit;
+
+  const { data, count, error } = await supabaseAdmin
+    .from('messages')
+    .select(`
+      *,
+      sender:users!messages_sender_id_fkey(id, name, profile_image)
+    `, { count: 'exact' })
+    .or(
+      `and(sender_id.eq.${userId},receiver_id.eq.${otherId}),` +
+      `and(sender_id.eq.${otherId},receiver_id.eq.${userId})`
+    )
+    .order('created_at', { ascending: true })
+    .range(offset, offset + limit - 1);
+
+  if (error) throw new AppError('Failed to fetch messages', 500);
+
+  // Mark fetched messages as read where current user is receiver
+  await supabaseAdmin
+    .from('messages')
+    .update({ is_read: true })
+    .eq('sender_id', otherId)
+    .eq('receiver_id', userId)
+    .eq('is_read', false);
+
+  res.json({
+    success: true,
+    data: data || [],
+    total: count ?? 0,
+    page,
+    limit,
+    has_more: (count ?? 0) > offset + limit,
+  });
 });
 
 export default router;

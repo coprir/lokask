@@ -74,22 +74,22 @@ async function handlePaymentSucceeded(pi: Stripe.PaymentIntent): Promise<void> {
   const customerId = pi.metadata.customer_id;
   const providerId = pi.metadata.provider_id;
 
-  // Update payment record
+  // Update payment status: pending → captured, then escrow → held
   await supabaseAdmin
     .from('payments')
-    .update({ status: 'succeeded' })
+    .update({ status: 'held' })
     .eq('stripe_payment_intent_id', pi.id);
 
-  // Update booking
+  // Update booking: payment_status → held, booking status → confirmed
   await supabaseAdmin
     .from('bookings')
-    .update({ payment_status: 'succeeded', status: 'confirmed' })
+    .update({ payment_status: 'held', status: 'confirmed' })
     .eq('id', bookingId);
 
   // Notify both parties
   const [{ data: customer }, { data: provider }] = await Promise.all([
-    supabaseAdmin.from('users').select('fcm_token, full_name').eq('id', customerId).single(),
-    supabaseAdmin.from('users').select('fcm_token, full_name').eq('id', providerId).single(),
+    supabaseAdmin.from('users').select('fcm_token, name').eq('id', customerId).single(),
+    supabaseAdmin.from('users').select('fcm_token, name').eq('id', providerId).single(),
   ]);
 
   const amount = (pi.amount / 100).toFixed(2);
@@ -98,7 +98,7 @@ async function handlePaymentSucceeded(pi: Stripe.PaymentIntent): Promise<void> {
   if (customer?.fcm_token) {
     await sendNotification({
       token: customer.fcm_token,
-      title: '✅ Payment Successful',
+      title: 'Payment Successful',
       body: `Your payment of ${currency} ${amount} was processed successfully.`,
       data: { type: 'payment', booking_id: bookingId },
     });
@@ -107,13 +107,12 @@ async function handlePaymentSucceeded(pi: Stripe.PaymentIntent): Promise<void> {
   if (provider?.fcm_token) {
     await sendNotification({
       token: provider.fcm_token,
-      title: '💰 Payment Received',
-      body: `${customer?.full_name} paid ${currency} ${amount} for your service.`,
+      title: 'Payment Received',
+      body: `${customer?.name} paid ${currency} ${amount} for your service.`,
       data: { type: 'payment', booking_id: bookingId },
     });
   }
 
-  // Save notification records
   await supabaseAdmin.from('notifications').insert([
     {
       user_id: customerId,
@@ -126,7 +125,7 @@ async function handlePaymentSucceeded(pi: Stripe.PaymentIntent): Promise<void> {
       user_id: providerId,
       type: 'payment',
       title: 'Payment Received',
-      body: `You received ${currency} ${amount} from ${customer?.full_name}.`,
+      body: `You received ${currency} ${amount} from ${customer?.name}.`,
       data: { booking_id: bookingId },
     },
   ]);
@@ -136,6 +135,7 @@ async function handlePaymentFailed(pi: Stripe.PaymentIntent): Promise<void> {
   const bookingId = pi.metadata.booking_id;
   const customerId = pi.metadata.customer_id;
 
+  // Update payment status → failed, booking status → cancelled
   await supabaseAdmin
     .from('payments')
     .update({ status: 'failed' })
@@ -143,7 +143,7 @@ async function handlePaymentFailed(pi: Stripe.PaymentIntent): Promise<void> {
 
   await supabaseAdmin
     .from('bookings')
-    .update({ payment_status: 'failed' })
+    .update({ status: 'cancelled', payment_status: 'refunded' })
     .eq('id', bookingId);
 
   const { data: user } = await supabaseAdmin
@@ -155,7 +155,7 @@ async function handlePaymentFailed(pi: Stripe.PaymentIntent): Promise<void> {
   if (user?.fcm_token) {
     await sendNotification({
       token: user.fcm_token,
-      title: '❌ Payment Failed',
+      title: 'Payment Failed',
       body: 'Your payment could not be processed. Please try again.',
       data: { type: 'payment', booking_id: bookingId },
     });
@@ -178,7 +178,7 @@ async function handleAccountUpdated(account: Stripe.Account): Promise<void> {
     if (user?.fcm_token) {
       await sendNotification({
         token: user.fcm_token,
-        title: '🎉 Payout Account Ready!',
+        title: 'Payout Account Ready!',
         body: 'Your Stripe account is set up. You can now receive payments.',
         data: { type: 'system' },
       });

@@ -1,7 +1,4 @@
 // backend/src/routes/payments.ts
-// LOKASK Payment Flow — 100% of payment goes to provider
-// (minus only Stripe's processing fee ~1.4% + €0.25 in EU)
-
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import Stripe from 'stripe';
@@ -13,8 +10,81 @@ import { config } from '../config/env';
 const router = Router();
 const stripe = new Stripe(config.STRIPE_SECRET_KEY, { apiVersion: '2024-04-10' });
 
+const PLATFORM_COMMISSION_RATE = 0.15;
+const PREMIUM_COMMISSION_RATE = 0.10;
+const CUSTOMER_BOOKING_FEE_RATE = 0.02;
+const CUSTOMER_BOOKING_FEE_MIN = 0.50;
+const CUSTOMER_BOOKING_FEE_MAX = 5.00;
+const CUSTOMER_FEE_WAIVED_BOOKINGS = 3;
+
 const CreatePaymentSchema = z.object({
   booking_id: z.string().uuid(),
+});
+
+// ─── GET /payments/earnings ───────────────────────────────────
+
+router.get('/earnings', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  const providerId = req.user!.id;
+
+  // Join payments via bookings on provider_id
+  const { data: releasedData, error: releasedError } = await supabaseAdmin
+    .from('payments')
+    .select(`
+      provider_earnings, created_at,
+      booking:bookings!payments_booking_id_fkey(provider_id)
+    `)
+    .eq('status', 'released');
+
+  if (releasedError) throw new AppError('Failed to fetch earnings', 500);
+
+  const { data: heldData, error: heldError } = await supabaseAdmin
+    .from('payments')
+    .select(`
+      provider_earnings, created_at,
+      booking:bookings!payments_booking_id_fkey(provider_id)
+    `)
+    .eq('status', 'held');
+
+  if (heldError) throw new AppError('Failed to fetch held earnings', 500);
+
+  const providerReleased = (releasedData || []).filter(
+    (p: any) => p.booking?.provider_id === providerId
+  );
+  const providerHeld = (heldData || []).filter(
+    (p: any) => p.booking?.provider_id === providerId
+  );
+
+  const totalEarned = providerReleased.reduce((sum, p) => sum + Number(p.provider_earnings), 0);
+  const pendingPayout = providerHeld.reduce((sum, p) => sum + Number(p.provider_earnings), 0);
+
+  // Weekly breakdown — last 8 weeks
+  const weeklyMap: Record<string, number> = {};
+  for (const p of providerReleased) {
+    const d = new Date(p.created_at);
+    const weekStart = new Date(d);
+    weekStart.setDate(d.getDate() - d.getDay());
+    const key = weekStart.toISOString().split('T')[0];
+    weeklyMap[key] = (weeklyMap[key] || 0) + Number(p.provider_earnings);
+  }
+
+  const weekly_breakdown = Object.entries(weeklyMap)
+    .map(([week, amount]) => ({ week, amount }))
+    .sort((a, b) => b.week.localeCompare(a.week))
+    .slice(0, 8);
+
+  res.json({
+    success: true,
+    data: {
+      total_earned: Math.round(totalEarned * 100) / 100,
+      pending_payout: Math.round(pendingPayout * 100) / 100,
+      weekly_breakdown,
+      transaction_list: providerReleased.map((p) => ({
+        amount: p.provider_earnings,
+        created_at: p.created_at,
+        status: 'released',
+      })),
+    },
+  });
 });
 
 // ─── POST /payments/intent — Create Stripe PaymentIntent ──────
@@ -23,40 +93,61 @@ router.post('/intent', authenticate, async (req: AuthenticatedRequest, res: Resp
   const { booking_id } = CreatePaymentSchema.parse(req.body);
   const customerId = req.user!.id;
 
-  // Fetch booking
+  // Fetch booking with provider info
   const { data: booking, error: bookingError } = await supabaseAdmin
     .from('bookings')
-    .select('*, provider:users!bookings_provider_id_fkey(stripe_account_id)')
+    .select(`
+      *,
+      provider:users!bookings_provider_id_fkey(stripe_account_id, is_premium)
+    `)
     .eq('id', booking_id)
     .single();
 
   if (bookingError || !booking) throw new AppError('Booking not found', 404);
   if (booking.customer_id !== customerId) throw new AppError('Not authorized', 403);
-  if (booking.payment_status === 'succeeded') throw new AppError('Booking already paid', 400);
+  if (booking.payment_status !== 'unpaid') throw new AppError('Booking already has a payment', 400);
 
   const providerStripeAccountId = booking.provider?.stripe_account_id;
   if (!providerStripeAccountId) {
     throw new AppError('Provider has not set up payouts yet. Please contact the provider.', 400);
   }
 
+  // Calculate fees
+  const commissionRate = booking.provider?.is_premium ? PREMIUM_COMMISSION_RATE : PLATFORM_COMMISSION_RATE;
+  const serviceAmount = Number(booking.total_amount);
+  const platformFee = Math.round(serviceAmount * commissionRate * 100) / 100;
+
+  // Count customer's completed bookings to determine if fee is waived
+  const { count: bookingCount } = await supabaseAdmin
+    .from('bookings')
+    .select('*', { count: 'exact', head: true })
+    .eq('customer_id', customerId)
+    .eq('status', 'completed');
+
+  const customerFee = (bookingCount ?? 0) < CUSTOMER_FEE_WAIVED_BOOKINGS
+    ? 0
+    : Math.min(Math.max(serviceAmount * CUSTOMER_BOOKING_FEE_RATE, CUSTOMER_BOOKING_FEE_MIN), CUSTOMER_BOOKING_FEE_MAX);
+  const customerFeeRounded = Math.round(customerFee * 100) / 100;
+
+  const customerTotal = serviceAmount + customerFeeRounded;
+  const providerEarnings = serviceAmount - platformFee;
+
   // Get or create Stripe customer
-  let stripeCustomerId = await getOrCreateStripeCustomer(customerId, req.user!.email);
+  const stripeCustomerId = await getOrCreateStripeCustomer(customerId, req.user!.email);
 
-  // Amount in smallest currency unit (cents)
-  const amountCents = Math.round(booking.total_amount * 100);
+  const amountCents = Math.round(customerTotal * 100);
+  const applicationFeeCents = Math.round(platformFee * 100);
 
-  // Create PaymentIntent with destination charge
-  // Full amount goes to provider's Stripe Connect account
   const paymentIntent = await stripe.paymentIntents.create({
     amount: amountCents,
-    currency: booking.currency.toLowerCase(),
+    currency: 'eur',
     customer: stripeCustomerId,
     transfer_data: {
       destination: providerStripeAccountId,
     },
-    // No application_fee_amount — 0 platform cut
+    application_fee_amount: applicationFeeCents,
     metadata: {
-      booking_id: booking_id,
+      booking_id,
       customer_id: customerId,
       provider_id: booking.provider_id,
     },
@@ -68,64 +159,27 @@ router.post('/intent', authenticate, async (req: AuthenticatedRequest, res: Resp
     .from('payments')
     .insert({
       booking_id,
-      customer_id: customerId,
-      provider_id: booking.provider_id,
       stripe_payment_intent_id: paymentIntent.id,
-      amount: booking.total_amount,
-      currency: booking.currency,
+      amount: customerTotal,
+      platform_fee: platformFee,
+      customer_fee: customerFeeRounded,
+      provider_earnings: providerEarnings,
       status: 'pending',
-      provider_amount: booking.total_amount, // full amount — no cut
     })
     .select()
     .single();
 
   if (paymentError) throw new AppError('Failed to record payment', 500);
 
-  // Link payment to booking
-  await supabaseAdmin
-    .from('bookings')
-    .update({ payment_id: payment.id, payment_status: 'processing' })
-    .eq('id', booking_id);
-
   res.json({
     success: true,
     data: {
       client_secret: paymentIntent.client_secret,
       payment_id: payment.id,
-      amount: booking.total_amount,
-      currency: booking.currency,
-    },
-  });
-});
-
-// ─── GET /payments/provider/dashboard ────────────────────────
-
-router.get('/provider/dashboard', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-  const providerId = req.user!.id;
-
-  const { data, error } = await supabaseAdmin
-    .from('payments')
-    .select('amount, provider_amount, currency, status, created_at')
-    .eq('provider_id', providerId)
-    .eq('status', 'succeeded')
-    .order('created_at', { ascending: false });
-
-  if (error) throw new AppError('Failed to fetch earnings', 500);
-
-  const totalEarnings = data?.reduce((sum, p) => sum + Number(p.provider_amount), 0) ?? 0;
-  const thisMonth = data?.filter(p => {
-    const d = new Date(p.created_at);
-    const now = new Date();
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).reduce((sum, p) => sum + Number(p.provider_amount), 0) ?? 0;
-
-  res.json({
-    success: true,
-    data: {
-      total_earnings: totalEarnings,
-      this_month: thisMonth,
-      payment_count: data?.length ?? 0,
-      payments: data ?? [],
+      amount: customerTotal,
+      platform_fee: platformFee,
+      customer_fee: customerFeeRounded,
+      provider_earnings: providerEarnings,
     },
   });
 });
@@ -137,14 +191,13 @@ router.post('/connect/onboard', authenticate, async (req: AuthenticatedRequest, 
 
   const { data: user } = await supabaseAdmin
     .from('users')
-    .select('stripe_account_id, email, full_name')
+    .select('stripe_account_id, email, name')
     .eq('id', userId)
     .single();
 
   let accountId = user?.stripe_account_id;
 
   if (!accountId) {
-    // Create Express Stripe Connect account
     const account = await stripe.accounts.create({
       type: 'express',
       email: user?.email,
@@ -164,7 +217,6 @@ router.post('/connect/onboard', authenticate, async (req: AuthenticatedRequest, 
       .eq('id', userId);
   }
 
-  // Create onboarding link
   const accountLink = await stripe.accountLinks.create({
     account: accountId,
     refresh_url: `${req.headers.origin}/provider/stripe/refresh`,

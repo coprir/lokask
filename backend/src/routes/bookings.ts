@@ -5,28 +5,24 @@ import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { supabaseAdmin } from '../config/supabase';
 import { AppError } from '../middleware/errorHandler';
 import { sendNotification } from '../services/notifications';
-import { createConversation } from '../services/conversations';
 
 const router = Router();
 
 const CreateBookingSchema = z.object({
   service_id: z.string().uuid(),
-  scheduled_at: z.string().datetime(),
-  duration_minutes: z.number().int().positive().optional(),
-  address: z.string().max(500).optional(),
-  lat: z.number().optional(),
-  lng: z.number().optional(),
+  scheduled_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  scheduled_time: z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM'),
+  duration_hours: z.number().positive().optional(),
   notes: z.string().max(1000).optional(),
 });
 
 const UpdateStatusSchema = z.object({
   status: z.enum(['confirmed', 'in_progress', 'completed', 'cancelled']),
-  cancellation_reason: z.string().max(500).optional(),
 });
 
-// ─── GET /bookings — list (customer or provider) ──────────────
+// ─── GET /bookings/me — list (customer or provider) ──────────
 
-router.get('/', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/me', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user!.id;
   const { role, status, page = 1, limit = 20 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
@@ -35,11 +31,11 @@ router.get('/', authenticate, async (req: AuthenticatedRequest, res: Response) =
     .from('bookings')
     .select(`
       *,
-      service:services(id, title, images, category, price, price_unit),
-      customer:users!bookings_customer_id_fkey(id, full_name, avatar_url, phone),
-      provider:users!bookings_provider_id_fkey(id, full_name, avatar_url, phone)
+      service:services(id, title, images, category, price_type, price),
+      customer:users!bookings_customer_id_fkey(id, name, profile_image, phone),
+      provider:users!bookings_provider_id_fkey(id, name, profile_image, phone)
     `, { count: 'exact' })
-    .order('scheduled_at', { ascending: false })
+    .order('scheduled_date', { ascending: false })
     .range(offset, offset + Number(limit) - 1);
 
   if (role === 'provider') {
@@ -101,7 +97,7 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
   // Fetch service
   const { data: service, error: serviceError } = await supabaseAdmin
     .from('services')
-    .select('id, provider_id, price, price_unit, duration_minutes, is_active, currency')
+    .select('id, provider_id, price, price_type, is_active')
     .eq('id', body.service_id)
     .single();
 
@@ -109,14 +105,10 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
   if (!service.is_active) throw new AppError('Service is not available', 400);
   if (service.provider_id === customerId) throw new AppError('Cannot book your own service', 400);
 
-  const durationMinutes = body.duration_minutes ?? service.duration_minutes ?? 60;
-  const totalAmount = service.price_unit === 'hourly'
-    ? (service.price * durationMinutes) / 60
+  const durationHours = body.duration_hours ?? 1;
+  const totalAmount = service.price_type === 'hourly'
+    ? Math.round(service.price * durationHours * 100) / 100
     : service.price;
-
-  const locationValue = body.lat && body.lng
-    ? `POINT(${body.lng} ${body.lat})`
-    : null;
 
   const { data: booking, error } = await supabaseAdmin
     .from('bookings')
@@ -124,28 +116,23 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
       service_id: body.service_id,
       customer_id: customerId,
       provider_id: service.provider_id,
-      scheduled_at: body.scheduled_at,
-      duration_minutes: durationMinutes,
-      address: body.address,
-      location: locationValue,
+      scheduled_date: body.scheduled_date,
+      scheduled_time: body.scheduled_time,
+      duration_hours: durationHours,
       notes: body.notes,
-      total_amount: Math.round(totalAmount * 100) / 100,
-      currency: service.currency,
+      total_amount: totalAmount,
       status: 'pending',
-      payment_status: 'pending',
+      payment_status: 'unpaid',
     })
     .select()
     .single();
 
   if (error) throw new AppError(`Failed to create booking: ${error.message}`, 500);
 
-  // Create conversation between customer and provider
-  await createConversation(customerId, service.provider_id, booking.id);
-
   // Notify provider
   const { data: customer } = await supabaseAdmin
     .from('users')
-    .select('full_name, fcm_token')
+    .select('name, fcm_token')
     .eq('id', customerId)
     .single();
 
@@ -158,40 +145,42 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
   if (provider?.fcm_token) {
     await sendNotification({
       token: provider.fcm_token,
-      title: '📅 New Booking Request',
-      body: `${customer?.full_name} wants to book your service`,
+      title: 'New Booking Request',
+      body: `${customer?.name} wants to book your service`,
       data: { type: 'booking', booking_id: booking.id },
     });
   }
 
-  // Save notification record
   await supabaseAdmin.from('notifications').insert({
     user_id: service.provider_id,
     type: 'booking',
     title: 'New Booking Request',
-    body: `${customer?.full_name} wants to book your service`,
+    body: `${customer?.name} wants to book your service`,
     data: { booking_id: booking.id },
   });
 
   res.status(201).json({ success: true, data: booking });
 });
 
-// ─── PATCH /bookings/:id/status ───────────────────────────────
+// ─── PUT /bookings/:id/status ─────────────────────────────────
 
-router.patch('/:id/status', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id/status', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { status, cancellation_reason } = UpdateStatusSchema.parse(req.body);
+  const { status } = UpdateStatusSchema.parse(req.body);
   const userId = req.user!.id;
 
   const { data: booking, error: fetchError } = await supabaseAdmin
     .from('bookings')
-    .select('*, customer:users!bookings_customer_id_fkey(fcm_token, full_name), provider:users!bookings_provider_id_fkey(fcm_token, full_name)')
+    .select(`
+      *,
+      customer:users!bookings_customer_id_fkey(fcm_token, name),
+      provider:users!bookings_provider_id_fkey(fcm_token, name)
+    `)
     .eq('id', id)
     .single();
 
   if (fetchError || !booking) throw new AppError('Booking not found', 404);
 
-  // Auth checks
   const isCustomer = booking.customer_id === userId;
   const isProvider = booking.provider_id === userId;
 
@@ -217,25 +206,23 @@ router.patch('/:id/status', authenticate, async (req: AuthenticatedRequest, res:
 
   const updates: Record<string, unknown> = { status };
 
-  if (status === 'cancelled') {
-    updates.cancelled_at = new Date().toISOString();
-    updates.cancelled_by = userId;
-    updates.cancellation_reason = cancellation_reason;
+  // Update payment_status on completion → released
+  if (status === 'completed') {
+    updates.payment_status = 'released';
+    // Mark payment as released
+    await supabaseAdmin
+      .from('payments')
+      .update({ status: 'released', released_at: new Date().toISOString() })
+      .eq('booking_id', id);
   }
 
-  if (status === 'completed') {
-    updates.completed_at = new Date().toISOString();
-
-    const { data: providerProfile } = await supabaseAdmin
-      .from('provider_profiles')
-      .select('completed_jobs')
-      .eq('user_id', booking.provider_id)
-      .single();
-
+  // On cancellation → refunded
+  if (status === 'cancelled') {
+    updates.payment_status = 'refunded';
     await supabaseAdmin
-      .from('provider_profiles')
-      .update({ completed_jobs: (providerProfile?.completed_jobs ?? 0) + 1 })
-      .eq('user_id', booking.provider_id);
+      .from('payments')
+      .update({ status: 'refunded' })
+      .eq('booking_id', id);
   }
 
   const { data, error } = await supabaseAdmin
@@ -252,10 +239,10 @@ router.patch('/:id/status', authenticate, async (req: AuthenticatedRequest, res:
   const notifyToken = isProvider ? booking.customer?.fcm_token : booking.provider?.fcm_token;
 
   const statusMessages: Record<string, string> = {
-    confirmed: '✅ Your booking has been confirmed!',
-    in_progress: '🔧 Your service has started',
-    completed: '🎉 Booking completed! Please leave a review.',
-    cancelled: '❌ Your booking was cancelled',
+    confirmed: 'Your booking has been confirmed!',
+    in_progress: 'Your service has started',
+    completed: 'Booking completed! Please leave a review.',
+    cancelled: 'Your booking was cancelled',
   };
 
   if (notifyToken) {

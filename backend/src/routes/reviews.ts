@@ -10,25 +10,28 @@ const router = Router();
 const CreateReviewSchema = z.object({
   booking_id: z.string().uuid(),
   rating: z.number().int().min(1).max(5),
-  comment: z.string().max(1000).optional(),
-  tags: z.array(z.string().max(50)).max(5).optional().default([]),
+  comment: z.string().max(280).optional(),
 });
 
-// GET /reviews?service_id= or ?provider_id=
+const ReplySchema = z.object({
+  reply: z.string().max(500),
+});
+
+// ─── GET /reviews?provider_id= ───────────────────────────────
+
 router.get('/', async (req, res: Response) => {
-  const { service_id, provider_id, page = 1, limit = 20 } = req.query;
+  const { provider_id, page = 1, limit = 20 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
 
   let query = supabaseAdmin
     .from('reviews')
     .select(`
       *,
-      reviewer:users!reviews_reviewer_id_fkey(id, full_name, avatar_url)
+      reviewer:users!reviews_reviewer_id_fkey(id, name, profile_image)
     `, { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + Number(limit) - 1);
 
-  if (service_id) query = query.eq('service_id', service_id);
   if (provider_id) query = query.eq('reviewee_id', provider_id);
 
   const { data, count, error } = await query;
@@ -37,7 +40,8 @@ router.get('/', async (req, res: Response) => {
   res.json({ success: true, data, total: count ?? 0 });
 });
 
-// POST /reviews
+// ─── POST /reviews ────────────────────────────────────────────
+
 router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const body = CreateReviewSchema.parse(req.body);
   const reviewerId = req.user!.id;
@@ -45,7 +49,7 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
   // Verify booking completion and reviewer is the customer
   const { data: booking } = await supabaseAdmin
     .from('bookings')
-    .select('customer_id, provider_id, service_id, status')
+    .select('customer_id, provider_id, status')
     .eq('id', body.booking_id)
     .single();
 
@@ -68,10 +72,8 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
       booking_id: body.booking_id,
       reviewer_id: reviewerId,
       reviewee_id: booking.provider_id,
-      service_id: booking.service_id,
       rating: body.rating,
       comment: body.comment,
-      tags: body.tags,
     })
     .select()
     .single();
@@ -81,7 +83,7 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
   // Notify the provider
   const { data: reviewer } = await supabaseAdmin
     .from('users')
-    .select('full_name')
+    .select('name')
     .eq('id', reviewerId)
     .single();
 
@@ -95,8 +97,8 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
     const { sendNotification } = await import('../services/notifications');
     await sendNotification({
       token: provider.fcm_token,
-      title: '⭐ New Review',
-      body: `${reviewer?.full_name} gave you ${body.rating} stars`,
+      title: 'New Review',
+      body: `${reviewer?.name} gave you ${body.rating} stars`,
       data: { type: 'review', booking_id: body.booking_id },
     });
   }
@@ -105,11 +107,41 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
     user_id: booking.provider_id,
     type: 'review',
     title: 'New Review',
-    body: `${reviewer?.full_name} gave you ${body.rating} stars`,
+    body: `${reviewer?.name} gave you ${body.rating} stars`,
     data: { booking_id: body.booking_id },
   });
 
   res.status(201).json({ success: true, data });
+});
+
+// ─── PUT /reviews/:id/reply ───────────────────────────────────
+
+router.put('/:id/reply', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { reply } = ReplySchema.parse(req.body);
+  const userId = req.user!.id;
+
+  // Must be the reviewee (provider)
+  const { data: review } = await supabaseAdmin
+    .from('reviews')
+    .select('reviewee_id, provider_reply')
+    .eq('id', id)
+    .single();
+
+  if (!review) throw new AppError('Review not found', 404);
+  if (review.reviewee_id !== userId) throw new AppError('Only the provider can reply to this review', 403);
+  if (review.provider_reply) throw new AppError('A reply already exists', 409);
+
+  const { data, error } = await supabaseAdmin
+    .from('reviews')
+    .update({ provider_reply: reply })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw new AppError('Failed to save reply', 500);
+
+  res.json({ success: true, data });
 });
 
 export default router;

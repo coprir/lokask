@@ -9,35 +9,35 @@ const router = Router();
 
 // ─── Zod Schemas ──────────────────────────────────────────────
 
+const CATEGORY_VALUES = [
+  'cleaning', 'tutoring', 'beauty', 'fitness', 'delivery',
+  'cooking', 'photography', 'handyman', 'childcare', 'pet_care',
+  'translation', 'tech',
+] as const;
+
+const AvailabilitySchema = z.object({
+  days: z.array(z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'])),
+  slots: z.array(z.string().regex(/^\d{2}:\d{2}$/)),
+}).optional();
+
 const CreateServiceSchema = z.object({
   title: z.string().min(5).max(100),
-  description: z.string().min(20).max(2000),
-  category: z.enum([
-    'cleaning', 'tutoring', 'delivery', 'handyman', 'beauty',
-    'tech_support', 'childcare', 'pet_care', 'cooking',
-    'translation', 'fitness', 'photography', 'other',
-  ]),
+  description: z.string().min(20).max(1000),
+  category: z.enum(CATEGORY_VALUES),
+  price_type: z.enum(['hourly', 'fixed']),
   price: z.number().positive().max(10000),
-  price_unit: z.enum(['hourly', 'fixed', 'daily']),
-  duration_minutes: z.number().positive().optional(),
-  images: z.array(z.string().url()).max(10).optional().default([]),
-  tags: z.array(z.string()).max(15).optional().default([]),
-  lat: z.number().min(-90).max(90).optional(),
-  lng: z.number().min(-180).max(180).optional(),
-  service_area_km: z.number().positive().max(100).optional().default(10),
-  is_remote: z.boolean().optional().default(false),
+  images: z.array(z.string().url()).max(5).optional().default([]),
+  availability: AvailabilitySchema,
+  is_featured: z.boolean().optional().default(false),
 });
 
 const SearchSchema = z.object({
   q: z.string().optional(),
   category: z.string().optional(),
-  lat: z.coerce.number().optional(),
-  lng: z.coerce.number().optional(),
-  radius_km: z.coerce.number().optional().default(10),
   min_price: z.coerce.number().optional(),
   max_price: z.coerce.number().optional(),
   min_rating: z.coerce.number().optional(),
-  is_remote: z.coerce.boolean().optional(),
+  featured: z.coerce.boolean().optional(),
   page: z.coerce.number().int().positive().optional().default(1),
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
 });
@@ -48,40 +48,23 @@ router.get('/', async (req, res: Response) => {
   const params = SearchSchema.parse(req.query);
   const offset = (params.page - 1) * params.limit;
 
-  // Use geo RPC if lat/lng provided
-  if (params.lat && params.lng) {
-    const { data, error } = await supabaseAdmin.rpc('find_nearby_services', {
-      p_lat: params.lat,
-      p_lng: params.lng,
-      p_radius_km: params.radius_km,
-      p_category: params.category || null,
-      p_limit: params.limit,
-    });
-
-    if (error) throw new AppError('Failed to fetch services', 500);
-
-    res.json({ success: true, data, page: params.page, limit: params.limit });
-    return;
-  }
-
-  // Standard query
   let query = supabaseAdmin
     .from('services')
     .select(`
       *,
       provider:users!services_provider_id_fkey(
-        id, full_name, avatar_url, city
+        id, name, profile_image, location_label, rating, total_bookings
       )
     `, { count: 'exact' })
     .eq('is_active', true)
-    .order('rating_avg', { ascending: false })
+    .order('rating', { ascending: false })
     .range(offset, offset + params.limit - 1);
 
   if (params.category) query = query.eq('category', params.category);
   if (params.min_price) query = query.gte('price', params.min_price);
   if (params.max_price) query = query.lte('price', params.max_price);
-  if (params.min_rating) query = query.gte('rating_avg', params.min_rating);
-  if (params.is_remote !== undefined) query = query.eq('is_remote', params.is_remote);
+  if (params.min_rating) query = query.gte('rating', params.min_rating);
+  if (params.featured) query = query.eq('is_featured', true);
   if (params.q) {
     query = query.textSearch('title', params.q, { type: 'websearch' });
   }
@@ -109,12 +92,7 @@ router.get('/:id', async (req, res: Response) => {
     .select(`
       *,
       provider:users!services_provider_id_fkey(
-        id, full_name, avatar_url, city, created_at,
-        provider_profiles(
-          bio, tagline, skills, languages, rating_avg,
-          review_count, completed_jobs, is_available,
-          response_time_minutes, id_verified
-        )
+        id, name, profile_image, location_label, rating, total_bookings
       )
     `)
     .eq('id', id)
@@ -122,23 +100,21 @@ router.get('/:id', async (req, res: Response) => {
 
   if (error || !data) throw new AppError('Service not found', 404);
 
-  // Increment view count (fire-and-forget)
-  supabaseAdmin
-    .from('services')
-    .update({ view_count: (data.view_count || 0) + 1 })
-    .eq('id', id)
-    .then(() => {});
-
-  // Fetch recent reviews
+  // Fetch recent reviews via bookings join
   const { data: reviews } = await supabaseAdmin
     .from('reviews')
     .select(`
       *,
       reviewer:users!reviews_reviewer_id_fkey(
-        id, full_name, avatar_url
+        id, name, profile_image
       )
     `)
-    .eq('service_id', id)
+    .eq('booking_id',
+      supabaseAdmin
+        .from('bookings')
+        .select('id')
+        .eq('service_id', id) as any
+    )
     .order('created_at', { ascending: false })
     .limit(10);
 
@@ -151,42 +127,23 @@ router.post('/', authenticate, async (req: AuthenticatedRequest, res: Response) 
   const body = CreateServiceSchema.parse(req.body);
   const providerId = req.user!.id;
 
-  // Build location point if lat/lng provided
-  const locationValue = body.lat && body.lng
-    ? `POINT(${body.lng} ${body.lat})`
-    : null;
-
   const { data, error } = await supabaseAdmin
     .from('services')
     .insert({
       ...body,
       provider_id: providerId,
-      location: locationValue,
     })
     .select()
     .single();
 
   if (error) throw new AppError(`Failed to create service: ${error.message}`, 500);
 
-  // Ensure provider_profile exists
-  const { data: profile } = await supabaseAdmin
-    .from('provider_profiles')
-    .select('user_id')
-    .eq('user_id', providerId)
-    .single();
-
-  if (!profile) {
-    await supabaseAdmin
-      .from('provider_profiles')
-      .insert({ user_id: providerId });
-  }
-
   res.status(201).json({ success: true, data });
 });
 
-// ─── PATCH /services/:id ──────────────────────────────────────
+// ─── PUT /services/:id ───────────────────────────────────────
 
-router.patch('/:id', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
 
   // Verify ownership
@@ -203,13 +160,9 @@ router.patch('/:id', authenticate, async (req: AuthenticatedRequest, res: Respon
   const UpdateSchema = CreateServiceSchema.partial();
   const body = UpdateSchema.parse(req.body);
 
-  const locationValue = body.lat && body.lng
-    ? `POINT(${body.lng} ${body.lat})`
-    : undefined;
-
   const { data, error } = await supabaseAdmin
     .from('services')
-    .update({ ...body, ...(locationValue ? { location: locationValue } : {}) })
+    .update(body)
     .eq('id', id)
     .select()
     .single();
@@ -219,7 +172,7 @@ router.patch('/:id', authenticate, async (req: AuthenticatedRequest, res: Respon
   res.json({ success: true, data });
 });
 
-// ─── DELETE /services/:id ─────────────────────────────────────
+// ─── DELETE /services/:id (soft delete) ──────────────────────
 
 router.delete('/:id', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
@@ -234,13 +187,12 @@ router.delete('/:id', authenticate, async (req: AuthenticatedRequest, res: Respo
     throw new AppError('Not authorized', 403);
   }
 
-  // Soft delete
   const { error } = await supabaseAdmin
     .from('services')
     .update({ is_active: false })
     .eq('id', id);
 
-  if (error) throw new AppError('Failed to delete service', 500);
+  if (error) throw new AppError('Failed to deactivate service', 500);
 
   res.json({ success: true, message: 'Service deactivated' });
 });
