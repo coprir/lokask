@@ -20,8 +20,6 @@ jest.mock('../../services/conversations', () => ({
   createConversation: jest.fn().mockResolvedValue(undefined),
 }));
 
-const mockFrom = supabaseAdmin.from as jest.Mock;
-
 function makeApp() {
   const app = express();
   app.use(express.json());
@@ -30,21 +28,49 @@ function makeApp() {
   return app;
 }
 
+function mockFromWith(data: any, extras: Record<string, any> = {}) {
+  const resolved = { data, error: null, count: Array.isArray(data) ? data.length : undefined, ...extras };
+  const chain: any = {
+    select: jest.fn().mockReturnThis(),
+    insert: jest.fn().mockReturnThis(),
+    update: jest.fn().mockReturnThis(),
+    upsert: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    order: jest.fn().mockReturnThis(),
+    range: jest.fn().mockReturnThis(),
+    single: jest.fn().mockResolvedValue(resolved),
+    then: (resolve: any, reject: any) => Promise.resolve(resolved).then(resolve, reject),
+    catch: (fn: any) => Promise.resolve(resolved).catch(fn),
+    finally: (fn: any) => Promise.resolve(resolved).finally(fn),
+  };
+  (supabaseAdmin.from as jest.Mock).mockReturnValueOnce(chain);
+  return chain;
+}
+
+function mockFromError(errorMsg: string) {
+  const resolved = { data: null, error: new Error(errorMsg) };
+  const chain: any = {
+    select: jest.fn().mockReturnThis(),
+    insert: jest.fn().mockReturnThis(),
+    update: jest.fn().mockReturnThis(),
+    upsert: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    order: jest.fn().mockReturnThis(),
+    range: jest.fn().mockReturnThis(),
+    single: jest.fn().mockResolvedValue(resolved),
+    then: (resolve: any, reject: any) => Promise.resolve(resolved).then(resolve, reject),
+    catch: (fn: any) => Promise.resolve(resolved).catch(fn),
+    finally: (fn: any) => Promise.resolve(resolved).finally(fn),
+  };
+  (supabaseAdmin.from as jest.Mock).mockReturnValueOnce(chain);
+  return chain;
+}
+
 describe('GET /bookings', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('returns a paginated list of bookings', async () => {
-    mockFrom.mockReturnValue({
-      select: jest.fn().mockReturnThis(),
-      order: jest.fn().mockReturnThis(),
-      range: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockReturnThis(),
-      then: jest.fn().mockResolvedValue({
-        data: [{ id: 'booking-1', status: 'pending' }],
-        count: 1,
-        error: null,
-      }),
-    });
+    mockFromWith([{ id: 'booking-1', status: 'pending' }]);
 
     const res = await request(makeApp()).get('/bookings');
     expect(res.status).toBe(200);
@@ -64,11 +90,7 @@ describe('POST /bookings', () => {
   });
 
   it('returns 404 when the service does not exist', async () => {
-    mockFrom.mockReturnValue({
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockReturnThis(),
-      single: jest.fn().mockResolvedValue({ data: null, error: new Error('not found') }),
-    });
+    mockFromError('not found');
 
     const res = await request(makeApp())
       .post('/bookings')
@@ -81,20 +103,24 @@ describe('POST /bookings', () => {
   });
 
   it('prevents booking your own service', async () => {
-    mockFrom.mockReturnValue({
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockReturnThis(),
-      single: jest.fn().mockResolvedValue({
-        data: {
-          id: 'service-1',
-          provider_id: 'customer-1', // same as authenticated user
-          price: 50,
-          price_unit: 'fixed',
-          is_active: true,
-          currency: 'USD',
-        },
-        error: null,
-      }),
+    const chain = mockFromWith({
+      id: 'service-1',
+      provider_id: 'customer-1',
+      price: 50,
+      price_unit: 'fixed',
+      is_active: true,
+      currency: 'USD',
+    });
+    chain.single.mockResolvedValue({
+      data: {
+        id: 'service-1',
+        provider_id: 'customer-1',
+        price: 50,
+        price_unit: 'fixed',
+        is_active: true,
+        currency: 'USD',
+      },
+      error: null,
     });
 
     const res = await request(makeApp())
@@ -119,11 +145,7 @@ describe('PATCH /bookings/:id/status', () => {
   });
 
   it('returns 404 when the booking does not exist', async () => {
-    mockFrom.mockReturnValue({
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockReturnThis(),
-      single: jest.fn().mockResolvedValue({ data: null, error: new Error('not found') }),
-    });
+    mockFromError('not found');
 
     const res = await request(makeApp())
       .patch('/bookings/nonexistent/status')
@@ -132,20 +154,17 @@ describe('PATCH /bookings/:id/status', () => {
   });
 
   it('blocks invalid status transitions', async () => {
-    mockFrom.mockReturnValue({
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockReturnThis(),
-      single: jest.fn().mockResolvedValue({
-        data: {
-          id: 'booking-1',
-          status: 'completed',
-          customer_id: 'customer-1',
-          provider_id: 'provider-1',
-          customer: { fcm_token: null, full_name: 'Customer' },
-          provider: { fcm_token: null, full_name: 'Provider' },
-        },
-        error: null,
-      }),
+    const chain = mockFromWith(null);
+    chain.single.mockResolvedValue({
+      data: {
+        id: 'booking-1',
+        status: 'completed',
+        customer_id: 'customer-1',
+        provider_id: 'provider-1',
+        customer: { fcm_token: null, full_name: 'Customer' },
+        provider: { fcm_token: null, full_name: 'Provider' },
+      },
+      error: null,
     });
 
     const res = await request(makeApp())

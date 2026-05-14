@@ -5,10 +5,8 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.test.ts'],
   moduleNameMapper: {
-    '^../config/env$': '<rootDir>/src/__tests__/__mocks__/env.ts',
-    '^./config/env$': '<rootDir>/src/__tests__/__mocks__/env.ts',
-    '^../config/supabase$': '<rootDir>/src/__tests__/__mocks__/supabase.ts',
-    '^./config/supabase$': '<rootDir>/src/__tests__/__mocks__/supabase.ts',
+    'config/env': '<rootDir>/src/__tests__/__mocks__/env.ts',
+    'config/supabase': '<rootDir>/src/__tests__/__mocks__/supabase.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',

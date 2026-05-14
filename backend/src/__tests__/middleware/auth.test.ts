@@ -1,10 +1,9 @@
+import 'express-async-errors';
 import request from 'supertest';
 import express from 'express';
 import { authenticate } from '../../middleware/auth';
 import { errorHandler } from '../../middleware/errorHandler';
 import { supabaseAdmin } from '../../config/supabase';
-
-const mockSupabase = supabaseAdmin as jest.Mocked<typeof supabaseAdmin>;
 
 function makeApp() {
   const app = express();
@@ -33,7 +32,7 @@ describe('authenticate middleware', () => {
   });
 
   it('rejects an invalid Supabase token', async () => {
-    (mockSupabase.auth.getUser as jest.Mock).mockResolvedValueOnce({
+    (supabaseAdmin.auth.getUser as jest.Mock).mockResolvedValueOnce({
       data: { user: null },
       error: new Error('invalid token'),
     });
@@ -46,13 +45,12 @@ describe('authenticate middleware', () => {
   });
 
   it('rejects inactive accounts', async () => {
-    (mockSupabase.auth.getUser as jest.Mock).mockResolvedValueOnce({
+    (supabaseAdmin.auth.getUser as jest.Mock).mockResolvedValueOnce({
       data: { user: { id: 'user-1', email: 'test@test.com' } },
       error: null,
     });
 
-    const fromMock = mockSupabase.from as jest.Mock;
-    fromMock.mockReturnValueOnce({
+    (supabaseAdmin.from as jest.Mock).mockReturnValueOnce({
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       single: jest.fn().mockResolvedValue({
@@ -69,13 +67,12 @@ describe('authenticate middleware', () => {
   });
 
   it('attaches user to request for valid token', async () => {
-    (mockSupabase.auth.getUser as jest.Mock).mockResolvedValueOnce({
+    (supabaseAdmin.auth.getUser as jest.Mock).mockResolvedValueOnce({
       data: { user: { id: 'user-1', email: 'test@test.com' } },
       error: null,
     });
 
-    const fromMock = mockSupabase.from as jest.Mock;
-    fromMock.mockReturnValueOnce({
+    (supabaseAdmin.from as jest.Mock).mockReturnValueOnce({
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       single: jest.fn().mockResolvedValue({
