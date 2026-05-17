@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 7%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 7%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 322 100% 58%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 263 70% 50%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 10% 15%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 189 94% 43%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 10% 15%;
+    --input: 240 10% 15%;
+    --ring: 322 100% 58%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-cyber-darker;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-cyber-pink/50 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-cyber-pink;
+  }
+}
+
+@layer utilities {
+  .cyber-border {
+    border: 1px solid;
+    border-image: linear-gradient(135deg, #ff2d78, #7c3aed, #06b6d4) 1;
+  }
+  .neon-glow {
+    box-shadow: 0 0 20px rgba(255, 45, 120, 0.3), 0 0 40px rgba(124, 58, 237, 0.2);
+  }
+  .neon-text {
+    text-shadow: 0 0 10px rgba(255, 45, 120, 0.8), 0 0 20px rgba(255, 45, 120, 0.5);
+  }
+  .glass {
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .gradient-text {
+    background: linear-gradient(135deg, #ff2d78 0%, #7c3aed 50%, #06b6d4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .typing-cursor::after {
+    content: "|";
+    animation: blink 1s infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+}

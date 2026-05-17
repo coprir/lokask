@@ -1,0 +1,382 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+enum SubscriptionTier {
+  FREE
+  BASIC
+  PREMIUM
+  VIP
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  TRIALING
+  INCOMPLETE
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum ContentType {
+  IMAGE
+  VOICE
+  TEXT_POST
+  STORY
+}
+
+enum MoodState {
+  HAPPY
+  EXCITED
+  CHILL
+  FLIRTY
+  MYSTERIOUS
+  THOUGHTFUL
+  ENERGETIC
+  MELANCHOLY
+}
+
+enum SafetyAction {
+  WARN
+  BLOCK
+  REPORT
+  BAN
+}
+
+model User {
+  id                String             @id @default(cuid())
+  email             String             @unique
+  name              String?
+  avatarUrl         String?
+  timezone          String             @default("UTC")
+  preferredLanguage String             @default("en")
+  engagementScore   Float              @default(0)
+  fanTier           Int                @default(1)
+  totalMessages     Int                @default(0)
+  lastActiveAt      DateTime?
+  onboardingDone    Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  subscription      Subscription?
+  memories          Memory[]
+  chatSessions      ChatSession[]
+  messages          Message[]
+  voiceUnlocks      VoiceUnlock[]
+  contentPurchases  ContentPurchase[]
+  safetyLogs        SafetyLog[]
+  analyticsEvents   AnalyticsEvent[]
+  notifications     Notification[]
+
+  @@map("users")
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  tier                 SubscriptionTier   @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  monthlyMessageQuota  Int                @default(20)
+  messagesUsed         Int                @default(0)
+  voiceEnabled         Boolean            @default(false)
+  exclusiveContent     Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments             Payment[]
+
+  @@map("subscriptions")
+}
+
+model Payment {
+  id               String   @id @default(cuid())
+  subscriptionId   String
+  stripePaymentId  String   @unique
+  amount           Int
+  currency         String   @default("usd")
+  status           String
+  description      String?
+  createdAt        DateTime @default(now())
+
+  subscription     Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@map("payments")
+}
+
+model AiPersona {
+  id                String     @id @default(cuid())
+  name              String     @unique
+  slug              String     @unique
+  tagline           String
+  bio               String
+  age               Int        @default(24)
+  location          String     @default("Los Angeles, CA")
+  avatarUrl         String?
+  coverUrl          String?
+  personality       Json
+  interests         String[]
+  conversationStyle String
+  currentMood       MoodState  @default(HAPPY)
+  voiceId           String?
+  voicePreset       String?
+  isActive          Boolean    @default(true)
+  isVerified        Boolean    @default(true)
+  followerCount     Int        @default(0)
+  postCount         Int        @default(0)
+  responseDelay     Int        @default(2000)
+  typingSpeed       Int        @default(50)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  chatSessions      ChatSession[]
+  generatedContent  GeneratedContent[]
+  memories          Memory[]
+  contentSchedules  ContentSchedule[]
+  feedPosts         FeedPost[]
+
+  @@map("ai_personas")
+}
+
+model Memory {
+  id          String   @id @default(cuid())
+  userId      String
+  personaId   String
+  type        String
+  key         String
+  value       String
+  importance  Float    @default(0.5)
+  embedding   Float[]
+  accessCount Int      @default(0)
+  lastAccessed DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  persona     AiPersona @relation(fields: [personaId], references: [id])
+
+  @@unique([userId, personaId, type, key])
+  @@index([userId, personaId])
+  @@map("memories")
+}
+
+model ChatSession {
+  id          String    @id @default(cuid())
+  userId      String
+  personaId   String
+  title       String?
+  isActive    Boolean   @default(true)
+  messageCount Int      @default(0)
+  lastMessageAt DateTime?
+  moodAtStart MoodState @default(HAPPY)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  persona     AiPersona  @relation(fields: [personaId], references: [id])
+  messages    Message[]
+
+  @@index([userId, personaId])
+  @@map("chat_sessions")
+}
+
+model Message {
+  id           String      @id @default(cuid())
+  sessionId    String
+  userId       String
+  role         MessageRole
+  content      String
+  audioUrl     String?
+  imageUrl     String?
+  metadata     Json?
+  tokens       Int         @default(0)
+  isRead       Boolean     @default(false)
+  isPremium    Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+
+  session      ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+  @@map("messages")
+}
+
+model VoiceMessage {
+  id           String   @id @default(cuid())
+  personaId    String
+  text         String
+  audioUrl     String
+  duration     Float
+  voiceId      String
+  preset       String?
+  createdAt    DateTime @default(now())
+
+  @@index([personaId])
+  @@map("voice_messages")
+}
+
+model VoiceUnlock {
+  id        String   @id @default(cuid())
+  userId    String
+  messageId String
+  paidAt    DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("voice_unlocks")
+}
+
+model GeneratedContent {
+  id           String      @id @default(cuid())
+  personaId    String
+  type         ContentType
+  prompt       String
+  imageUrl     String?
+  audioUrl     String?
+  textContent  String?
+  style        String?
+  metadata     Json?
+  isPublished  Boolean     @default(false)
+  publishedAt  DateTime?
+  likeCount    Int         @default(0)
+  viewCount    Int         @default(0)
+  createdAt    DateTime    @default(now())
+
+  persona      AiPersona   @relation(fields: [personaId], references: [id])
+
+  @@index([personaId, type])
+  @@map("generated_content")
+}
+
+model ContentPurchase {
+  id        String   @id @default(cuid())
+  userId    String
+  contentId String
+  amount    Int
+  paidAt    DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("content_purchases")
+}
+
+model ContentSchedule {
+  id          String      @id @default(cuid())
+  personaId   String
+  type        ContentType
+  prompt      String
+  scheduledAt DateTime
+  isCompleted Boolean     @default(false)
+  completedAt DateTime?
+  result      Json?
+  createdAt   DateTime    @default(now())
+
+  persona     AiPersona   @relation(fields: [personaId], references: [id])
+
+  @@index([scheduledAt, isCompleted])
+  @@map("content_schedules")
+}
+
+model FeedPost {
+  id          String   @id @default(cuid())
+  personaId   String
+  imageUrl    String
+  caption     String
+  hashtags    String[]
+  likeCount   Int      @default(0)
+  commentCount Int     @default(0)
+  viewCount   Int      @default(0)
+  isStory     Boolean  @default(false)
+  expiresAt   DateTime?
+  publishedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  persona     AiPersona @relation(fields: [personaId], references: [id])
+  comments    FeedComment[]
+
+  @@index([personaId, publishedAt])
+  @@map("feed_posts")
+}
+
+model FeedComment {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String?
+  isAi      Boolean  @default(false)
+  content   String
+  createdAt DateTime @default(now())
+
+  post      FeedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@map("feed_comments")
+}
+
+model SafetyLog {
+  id          String       @id @default(cuid())
+  userId      String?
+  action      SafetyAction
+  reason      String
+  content     String?
+  ipAddress   String?
+  userAgent   String?
+  resolved    Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@map("safety_logs")
+}
+
+model AnalyticsEvent {
+  id         String   @id @default(cuid())
+  userId     String?
+  event      String
+  properties Json?
+  sessionId  String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([event, createdAt])
+  @@map("analytics_events")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  type      String
+  isRead    Boolean  @default(false)
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}

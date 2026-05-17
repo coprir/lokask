@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "persona": "maya",
+  "schema": {
+    "user_profile": {
+      "name": null,
+      "nickname": null,
+      "timezone": null,
+      "language": "en",
+      "joined_at": null
+    },
+    "relationship": {
+      "stage": "new",
+      "first_message_at": null,
+      "last_message_at": null,
+      "total_conversations": 0,
+      "milestone_reached": [],
+      "inside_jokes": [],
+      "pet_names": []
+    },
+    "user_facts": {
+      "interests": [],
+      "dislikes": [],
+      "goals": [],
+      "location": null,
+      "job": null,
+      "relationship_status": null,
+      "pets": [],
+      "favorite_topics": []
+    },
+    "conversation_patterns": {
+      "typical_message_time": null,
+      "average_message_length": 0,
+      "prefers_voice": false,
+      "emoji_user": false,
+      "response_sensitivity": "medium"
+    },
+    "emotional_history": {
+      "sentiment_average": 0.5,
+      "support_needed_topics": [],
+      "celebration_moments": [],
+      "vulnerable_topics": []
+    },
+    "memory_vectors": []
+  },
+  "memory_types": {
+    "core": "Never expires. Fundamental user facts.",
+    "episodic": "Specific conversations/events. 90-day TTL.",
+    "semantic": "General knowledge about user. 30-day TTL.",
+    "working": "Current session context. Session TTL."
+  },
+  "retrieval_config": {
+    "max_memories_per_context": 10,
+    "similarity_threshold": 0.75,
+    "recency_weight": 0.3,
+    "importance_weight": 0.4,
+    "similarity_weight": 0.3
+  }
+}
