@@ -1,0 +1,19 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npx prisma generate && next build",
+  "installCommand": "npm install",
+  "outputDirectory": ".next",
+  "env": {
+    "SKIP_ENV_VALIDATION": "1"
+  },
+  "crons": [
+    {
+      "path": "/api/cron/morning-message",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/content-schedule",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
